@@ -1,17 +1,36 @@
-# ライブラリのインポート
+#ライブラリのインポート
 import ast
 import boto3
 import base64
 from botocore.exceptions import ClientError
-from bs4 import BeautifulSoup
+import json
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.select import Select
+from selenium.webdriver.chrome.options import Options
 import pandas as pd
-import requests
-import datetime as dt
+from datetime import datetime, timedelta
+import os
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import get_as_dataframe, set_with_dataframe
+import datetime as dt
+from oauth2client.service_account import ServiceAccountCredentials
 
 def lambda_handler(event, context):
+      
+    # ヘッドレスモード、その他オプション
+    options = Options()
+    
+    options.binary_location = '/opt/headless/python/bin/headless-chromium'
+
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--single-process')
+    options.add_argument('--disable-dev-shm-usage')
+
+    # Chrome起動
+    driver = webdriver.Chrome(executable_path="/opt/headless/python/bin/chromedriver", options=options)
 
     # データフレームの作成に必要なリストの定義
     name_list = []
@@ -29,17 +48,24 @@ def lambda_handler(event, context):
     content_list = []
     get_date_list = []
 
+    # ログイン
+    inuki_data = open('inuki_account.json', 'r')
+    inuki_json = json.load(inuki_data)
+
+    driver.get('https://www.inuki-honpo.jp/customer/')
+
+    driver.find_element(by=By.NAME, value="mail").send_keys(inuki_json['email'])
+    driver.find_element(by=By.NAME, value="passwd").send_keys(inuki_json['password'])
+    driver.find_element(by=By.NAME, value="sbmt").click()
+
     # 今日の日付
     today = format(dt.datetime.today(),'%Y/%m/%d')
 
-    # 居抜き本舗の検索ページ（フリーワード：ゴールデン街）
-    url:str = 'https://www.inuki-honpo.jp/rent/?mode_disp=&s_cd=&j_set=&offset=0&sort=n_sort+DESC%2Cbukken_ctime+DESC&limit=25&s_sort=n_sort+DESC%2Cbukken_ctime+DESC&s_unit=25&s_inuki_type%5B%5D=1&disp_prf=1&disp_city=0&disp_line=0&disp_st=0&disp_town=0&s_walk=&s_tsubo_min=&s_tsubo_max=&s_floor=&s_kakaku_min=&s_kakaku_max=&s_hosyokin_min=&s_hosyokin_max=&s_building_kakaku_min=&s_building_kakaku_max=&s_freeword=%E3%82%B4%E3%83%BC%E3%83%AB%E3%83%87%E3%83%B3%E8%A1%97&result%5B0%5D.x=27&result%5B0%5D.y=16#search_list'
-    url:str = 'https://www.inuki-honpo.jp/rent/?mode_disp=&s_cd=&j_set=&offset=&sort=n_sort+DESC%2Cbukken_ctime+DESC&limit=&s_sort=n_sort+DESC%2Cbukken_ctime+DESC&s_unit=25&s_inuki_type%5B%5D=1&disp_prf=1&disp_city=0&disp_line=0&disp_st=0&disp_town=0&s_walk=&s_tsubo_min=&s_tsubo_max=&s_floor=&s_kakaku_min=&s_kakaku_max=&s_hosyokin_min=&s_hosyokin_max=&s_building_kakaku_min=&s_building_kakaku_max=&s_freeword=%E6%96%B0%E5%AE%BF&result%5B0%5D.x=55&result%5B0%5D.y=14#search_list'
-    page = requests.get(url)
-    soup = BeautifulSoup(page.content, 'html.parser')
-
+    # フリーワードゴールデン検索結果ページ
+    driver.get('https://www.inuki-honpo.jp/rent/?mode_disp=&s_cd=&j_set=&offset=&sort=n_sort+DESC%2Cbukken_ctime+DESC&limit=&s_sort=n_sort+DESC%2Cbukken_ctime+DESC&s_unit=25&s_inuki_type%5B%5D=1&disp_prf=1&s_prf_cd%5B%5D=13&disp_city=0&disp_line=1&line_cd%5B%5D=588&disp_st=1&station_cd%5B%5D=588-231&station_cd%5B%5D=588-6327&disp_town=0&s_walk=&s_tsubo_min=&s_tsubo_max=&s_floor=&s_kakaku_min=&s_kakaku_max=&s_hosyokin_min=&s_hosyokin_max=&s_building_kakaku_min=&s_building_kakaku_max=&s_freeword=%E3%82%B4%E3%83%BC%E3%83%AB%E3%83%87%E3%83%B3&result%5B0%5D.x=57&result%5B0%5D.y=18#search_list')
+    
     # 物件ごと
-    elems = soup.find_all('table', class_='bukkenListTable')
+    elems = driver.find_elements(by=By.CLASS_NAME, value='bukkenListTable')
 
     for index, elem in enumerate(elems):
         
@@ -47,41 +73,41 @@ def lambda_handler(event, context):
         get_date_list.append(today)
 
         # 物件名
-        name_list.append(elem.find('p', class_='bukkenListCat').text)
+        name_list.append(elem.find_element(by=By.CLASS_NAME, value='bukkenListCat').text)
         
         # 物件画像
-        image_url = 'https://www.inuki-honpo.jp/' + elem.find('a', class_='screenshot').find('img')['src']
+        image_url = 'https://www.inuki-honpo.jp/' + elem.find_element(by=By.CLASS_NAME, value='screenshot').find_element(by=By.TAG_NAME, value='img').get_attribute('src')
         image_url_list.append(image_url)
         image_list.append('=IMAGE("' + image_url + '")')
         
         # 簡易住所
-        address_list.append(elem.find('td', class_='bukkenListAdd delPad').text)
+        address_list.append(elem.find_element(by=By.CLASS_NAME, value='bukkenListAdd').text)
         
         # 駅徒歩
-        station:str = elem.find('td', class_='bukkenListSta delPad').text.replace('\r', '').replace('\n', '').replace('\t', '')
-        time:str = elem.find('td', class_='bukkenListStaMin delPad').text.replace('\r', '').replace('\n', '').replace('\t', '')
+        station:str = elem.find_element(by=By.CLASS_NAME, value='bukkenListSta').text.replace('\r', '').replace('\n', '').replace('\t', '')
+        time:str = elem.find_element(by=By.CLASS_NAME, value='bukkenListStaMin').text.replace('\r', '').replace('\n', '').replace('\t', '')
         station_walk_list.append(station + '：' + time)
 
         # 平米、坪数、階数
-        elems_space = elem.find('td', class_='bukkenListM2').find_all('li')
+        elems_space = elem.find_element(by=By.CLASS_NAME, value='bukkenListM2').find_elements(by=By.TAG_NAME, value='li')
         hebe_list.append(elems_space[0].text)
         tsubo_list.append(elems_space[1].text)
         kai_list.append(elems_space[2].text)
         
         # 賃料
-        price_list.append(elem.find('span', class_='bukkenListPrice').text)
+        price_list.append(elem.find_element(by=By.CLASS_NAME, value='bukkenListPrice').text)
         
         # 坪単価
-        price2_list.append(elem.find('span', class_='bukkenListPrice2').text)
+        price2_list.append(elem.find_element(by=By.CLASS_NAME, value='bukkenListPrice2').text)
         
         # 保証金・敷金・造作価格
-        shiki_list.append(elem.find('td', class_='bukkenListshiki').find('li').text)
+        shiki_list.append(elem.find_element(by=By.CLASS_NAME, value='bukkenListshiki').find_element(by=By.TAG_NAME, value=('li')).text)
         
         # 詳細URL
-        detail_url_list.append('https://www.inuki-honpo.jp/' + elem.find('a')['href'])
+        detail_url_list.append('https://www.inuki-honpo.jp/' + elem.find_element(by=By.TAG_NAME, value='a').get_attribute('href'))
         
         # 説明文
-        content_list.append(elem.find('p', class_='prDesc').text)
+        content_list.append(elem.find_element(by=By.CLASS_NAME, value='prDesc').text)
         
     # データフレーム作成
     df = pd.DataFrame()
@@ -108,7 +134,7 @@ def lambda_handler(event, context):
     client = gspread.authorize(creds)
 
     # ワークシートを開く
-    spreadsheet = client.open("居抜き本舗ゴールデン街抜粋")
+    spreadsheet = client.open("居抜き本舗ゴールデン街定期スクレイピング")
     worksheet = spreadsheet.worksheet('取得リスト')
 
     # ワークシートからすべてのレコードを取得
